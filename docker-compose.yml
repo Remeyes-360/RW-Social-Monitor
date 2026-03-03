@@ -1,0 +1,126 @@
+version: '3.9'
+
+services:
+  # Base de donnees PostgreSQL
+  db:
+    image: postgres:15-alpine
+    container_name: rw_monitor_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rwmonitor
+      POSTGRES_USER: rwmonitor
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-securepassword}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rwmonitor"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Cache Redis
+  redis:
+    image: redis:7-alpine
+    container_name: rw_monitor_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend FastAPI
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rw_monitor_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://rwmonitor:${DB_PASSWORD:-securepassword}@db:5432/rwmonitor
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Worker Celery (collecte periodique)
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rw_monitor_worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://rwmonitor:${DB_PASSWORD:-securepassword}@db:5432/rwmonitor
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: celery -A app.celery_app worker --loglevel=info
+
+  # Scheduler Celery Beat
+  scheduler:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rw_monitor_scheduler
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://rwmonitor:${DB_PASSWORD:-securepassword}@db:5432/rwmonitor
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - worker
+    volumes:
+      - ./backend:/app
+    command: celery -A app.celery_app beat --loglevel=info
+
+  # Frontend Next.js
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: rw_monitor_frontend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  default:
+    name: rw_monitor_network
