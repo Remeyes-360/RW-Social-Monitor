@@ -1,0 +1,62 @@
+# RW Social Monitor - Backend Dependencies
+
+# Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-dotenv==1.0.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# Base de donnees
+sqlalchemy==2.0.25
+alembic==1.13.1
+psycopg2-binary==2.9.9
+asyncpg==0.29.0
+
+# Cache
+redis==5.0.1
+celery==5.3.6
+celery[redis]==5.3.6
+flower==2.0.1
+
+# Securite
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.7
+
+# HTTP Client
+httpx==0.26.0
+aiohttp==3.9.3
+requests==2.31.0
+
+# Collecteurs reseaux sociaux
+tweepy==4.14.0
+facebook-sdk==3.1.0
+google-api-python-client==2.116.0
+telethon==1.34.0
+apify-client==1.6.4
+instagrapi==2.0.0
+
+# Analyse IA & Sentiment
+openai==1.12.0
+transformers==4.37.2
+torch==2.2.0
+scikit-learn==1.4.0
+nltk==3.8.1
+langdetect==1.0.9
+
+# Traitement texte
+beautifulsoup4==4.12.3
+lxml==5.1.0
+feedparser==6.0.11
+
+# Alertes
+aiosmtplib==3.0.1
+jinja2==3.1.3
+
+# Utilitaires
+pandas==2.2.0
+numpy==1.26.4
+python-dateutil==2.8.2
+loguru==0.7.2
+apscheduler==3.10.4
