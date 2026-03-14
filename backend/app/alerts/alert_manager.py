@@ -6,43 +6,37 @@ from app.analyzers.sentiment_analyzer import generate_crisis_note
 from loguru import logger
 from datetime import datetime
 from typing import List, Dict
-import redis.asyncio as aioredis
-import json
 
 
 class AlertManager:
     """Gestionnaire d'alertes temps reel pour le QG de campagne Wadagni."""
 
-    ALERT_LEVELS = {
-        "CALME": {"color": "#22c55e", "emoji": "verde", "threshold_negative": 30},
-        "VIGILANCE": {"color": "#f59e0b", "emoji": "jaune", "threshold_negative": 50},
-        "TENSION": {"color": "#f97316", "emoji": "orange", "threshold_negative": 65},
-        "CRISE": {"color": "#ef4444", "emoji": "rouge", "threshold_negative": 80},
+    # FIX: Color map kept here for email rendering; thresholds now come from settings
+    LEVEL_COLORS = {
+        "CALME": "#22c55e",
+        "VIGILANCE": "#f59e0b",
+        "TENSION": "#f97316",
+        "CRISE": "#ef4444",
     }
 
     def __init__(self):
         self.recipients = settings.alert_recipients_list
         self.crisis_keywords = settings.crisis_keywords_list
 
-    def calculate_alert_level(self, negative_pct: float) -> str:
-        """Calculer le niveau d'alerte en fonction du % negatif."""
-        if negative_pct >= 80:
+    def calculate_alert_level(self, negative_pct: float, crisis_count: int = 0) -> str:
+        """FIX: Uses centralized thresholds from settings instead of hardcoded values."""
+        if crisis_count > 0 or negative_pct >= settings.ALERT_THRESHOLD_CRISIS:
             return "CRISE"
-        elif negative_pct >= 65:
+        elif negative_pct >= settings.ALERT_THRESHOLD_TENSION:
             return "TENSION"
-        elif negative_pct >= 50:
+        elif negative_pct >= settings.ALERT_THRESHOLD_VIGILANCE:
             return "VIGILANCE"
-        else:
-            return "CALME"
+        return "CALME"
 
     def detect_crisis_keywords(self, content: str) -> List[str]:
         """Detecter les mots cles de crise dans un contenu."""
-        found = []
         content_lower = content.lower()
-        for keyword in self.crisis_keywords:
-            if keyword.lower() in content_lower:
-                found.append(keyword)
-        return found
+        return [kw for kw in self.crisis_keywords if kw.lower() in content_lower]
 
     def detect_volume_spike(self, current_count: int, avg_count: float) -> bool:
         """Detecter un pic de volume anormal."""
@@ -65,8 +59,7 @@ class AlertManager:
                 logger.warning("Alerte email: pas de destinataires configures")
                 return False
 
-            level_info = self.ALERT_LEVELS.get(alert_level, self.ALERT_LEVELS["VIGILANCE"])
-            color = level_info["color"]
+            color = self.LEVEL_COLORS.get(alert_level, self.LEVEL_COLORS["VIGILANCE"])
 
             html_body = f"""
             <html><body>
@@ -111,11 +104,7 @@ class AlertManager:
     async def trigger_crisis_alert(self, crisis_mentions: List[Dict], crisis_type: str) -> None:
         """Declencher une alerte de crise complete."""
         logger.warning(f"ALERTE CRISE: {crisis_type} - {len(crisis_mentions)} mentions")
-
-        # Generer la note de crise avec l'IA
         crisis_note = await generate_crisis_note(crisis_mentions, crisis_type)
-
-        # Envoyer l'email
         await self.send_email_alert(
             subject=f"CRISE DETECTEE: {crisis_type}",
             body=crisis_note,
