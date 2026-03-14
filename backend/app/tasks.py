@@ -2,11 +2,12 @@ from app.celery_app import celery_app, run_async
 from app.collectors.twitter_collector import twitter_collector
 from app.collectors.telegram_collector import telegram_collector
 from app.collectors.apify_collector import apify_collector
+# FIX: generate_weekly_report now exists in sentiment_analyzer — import no longer crashes worker
 from app.analyzers.sentiment_analyzer import analyze_mention, generate_daily_brief, generate_weekly_report
 from app.alerts.alert_manager import alert_manager
 from app.database import AsyncSessionLocal
 from app.models.mention import Mention
-from sqlalchemy import select, func, cast, Float
+from sqlalchemy import select
 from datetime import datetime, timedelta, timezone
 from loguru import logger
 from typing import List, Dict
@@ -14,26 +15,55 @@ import asyncio
 
 
 async def save_mentions(mentions: List[Dict]) -> int:
-    """Sauvegarder les mentions en base de donnees."""
-    saved = 0
-    async with AsyncSessionLocal() as db:
-        for data in mentions:
-            # Verifier si la mention existe deja
-            existing = await db.execute(
-                select(Mention).where(
-                    Mention.platform_post_id == data.get("platform_post_id")
-                )
-            )
-            if existing.scalar_one_or_none():
-                continue  # Deja en base
+    """
+    FIX: AI analysis is now concurrent with a semaphore instead of sequential.
+    Previously: 100 mentions = 100 sequential GPT-4 calls (very slow, expensive).
+    Now: up to AI_ANALYSIS_CONCURRENCY calls run in parallel.
+    """
+    from app.config import settings
 
-            # Analyser avec l'IA
+    if not mentions:
+        return 0
+
+    # Deduplicate against DB in one query
+    post_ids = [m.get("platform_post_id") for m in mentions if m.get("platform_post_id")]
+    async with AsyncSessionLocal() as db:
+        existing_result = await db.execute(
+            select(Mention.platform_post_id).where(Mention.platform_post_id.in_(post_ids))
+        )
+        existing_ids = {row[0] for row in existing_result.all()}
+
+    new_mentions = [m for m in mentions if m.get("platform_post_id") not in existing_ids
+                    and m.get("platform_post_id") is not None]
+
+    if not new_mentions:
+        logger.info("Aucune nouvelle mention a sauvegarder")
+        return 0
+
+    # FIX: Concurrent AI analysis with semaphore
+    semaphore = asyncio.Semaphore(settings.AI_ANALYSIS_CONCURRENCY)
+
+    async def analyze_with_semaphore(data: Dict) -> tuple[Dict, Dict]:
+        async with semaphore:
             analysis = await analyze_mention(
                 content=data["content"],
                 platform=data["platform"],
             )
+            return data, analysis
 
-            # Creer l'objet Mention
+    results = await asyncio.gather(
+        *[analyze_with_semaphore(m) for m in new_mentions],
+        return_exceptions=True,
+    )
+
+    saved = 0
+    async with AsyncSessionLocal() as db:
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error(f"Erreur lors de l'analyse d'une mention: {result}")
+                continue
+
+            data, analysis = result
             mention = Mention(
                 platform=data["platform"],
                 platform_post_id=data.get("platform_post_id"),
@@ -48,11 +78,11 @@ async def save_mentions(mentions: List[Dict]) -> int:
                 comments=data.get("comments", 0),
                 views=data.get("views", 0),
                 published_at=data.get("published_at"),
-                # Resultats IA
                 sentiment=analysis.get("sentiment"),
                 sentiment_score=analysis.get("sentiment_score"),
                 narratifs=analysis.get("narratifs", []),
                 keywords=analysis.get("keywords", []),
+                comentions=analysis.get("comentions", []),
                 is_talon_comention=analysis.get("is_talon_comention", False),
                 is_rumor=analysis.get("is_rumor", False),
                 is_crisis=analysis.get("is_crisis", False),
@@ -65,6 +95,8 @@ async def save_mentions(mentions: List[Dict]) -> int:
             saved += 1
 
         await db.commit()
+
+    logger.info(f"Sauvegarde: {saved} nouvelles mentions")
     return saved
 
 
@@ -72,32 +104,28 @@ async def save_mentions(mentions: List[Dict]) -> int:
 def collect_all_platforms(self):
     """Tache principale: collecter les mentions sur toutes les plateformes."""
     logger.info("Demarrage collecte multi-plateformes...")
-    
+
     async def _collect():
         all_mentions = []
 
-        # Twitter / X
         try:
             twitter = await twitter_collector.collect()
             all_mentions.extend(twitter)
         except Exception as e:
             logger.error(f"Erreur Twitter: {e}")
 
-        # Telegram
         try:
             telegram = await telegram_collector.collect()
             all_mentions.extend(telegram)
         except Exception as e:
             logger.error(f"Erreur Telegram: {e}")
 
-        # Apify (TikTok + Instagram)
         try:
             apify = await apify_collector.collect_all()
             all_mentions.extend(apify)
         except Exception as e:
             logger.error(f"Erreur Apify: {e}")
 
-        # Sauvegarder et analyser
         saved = await save_mentions(all_mentions)
         logger.info(f"Collecte terminee: {len(all_mentions)} collectees, {saved} nouvelles sauvegardees")
         return saved
@@ -120,7 +148,6 @@ def generate_daily_brief_task():
                 logger.info("Pas de mentions pour le brief quotidien")
                 return
 
-            # Preparer les donnees pour l'IA
             data = [{
                 "platform": m.platform,
                 "sentiment": m.sentiment,
@@ -133,7 +160,6 @@ def generate_daily_brief_task():
 
             brief = await generate_daily_brief(data)
 
-            # Envoyer par email
             await alert_manager.send_email_alert(
                 subject=f"Brief Meteo Numerique - {datetime.now().strftime('%d/%m/%Y')}",
                 body=brief,
@@ -167,21 +193,58 @@ def check_and_trigger_alerts():
 
             logger.info(f"Check alertes: {total} mentions, {negative_pct:.0f}% negatif, niveau={level}")
 
-            # Alerte crise
             if crisis:
                 crisis_data = [{
                     "content": m.content[:200],
                     "platform": m.platform,
                     "crisis_keywords": m.crisis_keywords_found,
                 } for m in crisis[:5]]
-                await alert_manager.trigger_crisis_alert(crisis_data, f"{len(crisis)} contenus de crise detectes")
+                await alert_manager.trigger_crisis_alert(
+                    crisis_data, f"{len(crisis)} contenus de crise detectes"
+                )
 
     return run_async(_check())
 
 
+# FIX: Implemented weekly report — was a silent pass before
 @celery_app.task(name="app.tasks.generate_weekly_report_task")
 def generate_weekly_report_task():
-    """Generer le rapport strategique hebdomadaire."""
+    """Generer et envoyer le rapport strategique hebdomadaire au QG."""
     logger.info("Generation rapport hebdomadaire...")
-    # Implemente de facon similaire au brief quotidien mais sur 7 jours
-    pass
+
+    async def _weekly():
+        async with AsyncSessionLocal() as db:
+            since = datetime.now(timezone.utc) - timedelta(days=7)
+            result = await db.execute(
+                select(Mention).where(Mention.collected_at >= since)
+            )
+            mentions = result.scalars().all()
+
+            if not mentions:
+                logger.info("Pas de mentions pour le rapport hebdomadaire")
+                return
+
+            data = [{
+                "platform": m.platform,
+                "sentiment": m.sentiment,
+                "sentiment_score": m.sentiment_score,
+                "narratifs": m.narratifs,
+                "keywords": m.keywords,
+                "summary": m.ai_summary,
+                "is_crisis": m.is_crisis,
+                "is_talon": m.is_talon_comention,
+                "is_rumor": m.is_rumor,
+                "published_at": m.published_at.isoformat() if m.published_at else None,
+            } for m in mentions]
+
+            report = await generate_weekly_report(data)
+
+            week_label = datetime.now().strftime("Semaine %W - %Y")
+            await alert_manager.send_email_alert(
+                subject=f"Rapport Hebdomadaire - {week_label}",
+                body=report,
+                alert_level="CALME",
+            )
+            logger.info(f"Rapport hebdomadaire envoye: {len(mentions)} mentions analysees")
+
+    return run_async(_weekly())
