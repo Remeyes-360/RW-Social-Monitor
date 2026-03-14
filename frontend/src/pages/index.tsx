@@ -1,7 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Head from 'next/head';
 import { dashboardApi, Stats, AlertLevel, Platform, Narratif, TimelinePoint, TopAccount } from '../lib/api';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Legend, PieChart, Pie, Cell } from 'recharts';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  LineChart, Line, Legend, PieChart, Pie, Cell,
+} from 'recharts';
 
 const ALERT_COLORS: Record<string, string> = {
   CALME: 'bg-green-500',
@@ -23,27 +26,33 @@ export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [alertLevel, setAlertLevel] = useState<AlertLevel | null>(null);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
-  const [narratifs, setNaratifs] = useState<Narratif[]>([]);
+  // FIX: renamed naratifs → narratifs throughout
+  const [narratifs, setNarratifs] = useState<Narratif[]>([]);
   const [timeline, setTimeline] = useState<TimelinePoint[]>([]);
   const [topAccounts, setTopAccounts] = useState<TopAccount[]>([]);
   const [hours, setHours] = useState(24);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
 
+  // FIX: Use a ref to track the interval so it's always cleared cleanly on re-render
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const fetchData = async () => {
     try {
-      const [statsRes, alertRes, platformsRes, naratifRes, timelineRes, accountsRes] = await Promise.all([
-        dashboardApi.getStats(hours),
-        dashboardApi.getAlertLevel(),
-        dashboardApi.getPlatforms(hours),
-        dashboardApi.getNaratifs(hours),
-        dashboardApi.getTimeline(hours),
-        dashboardApi.getTopAccounts(hours),
-      ]);
+      const [statsRes, alertRes, platformsRes, narratifRes, timelineRes, accountsRes] =
+        await Promise.all([
+          dashboardApi.getStats(hours),
+          dashboardApi.getAlertLevel(),
+          dashboardApi.getPlatforms(hours),
+          // FIX: was getNaratifs (typo)
+          dashboardApi.getNarratifs(hours),
+          dashboardApi.getTimeline(hours),
+          dashboardApi.getTopAccounts(hours),
+        ]);
       setStats(statsRes.data);
       setAlertLevel(alertRes.data);
       setPlatforms(platformsRes.data);
-      setNaratifs(naratifRes.data);
+      setNarratifs(narratifRes.data);
       setTimeline(timelineRes.data);
       setTopAccounts(accountsRes.data);
       setLastUpdate(new Date());
@@ -55,9 +64,17 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
+    setLoading(true);
     fetchData();
-    const interval = setInterval(fetchData, 5 * 60 * 1000); // refresh every 5 min
-    return () => clearInterval(interval);
+
+    // FIX: Clear previous interval before creating a new one to prevent stale interval pileup
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(fetchData, 5 * 60 * 1000);
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hours]);
 
   const alertColor = alertLevel ? ALERT_COLORS[alertLevel.level] : 'bg-gray-400';
@@ -70,7 +87,6 @@ export default function Dashboard() {
       </Head>
 
       <div className="min-h-screen bg-gray-950 text-white">
-        {/* Header */}
         <header className="bg-gray-900 border-b border-gray-800 px-6 py-4">
           <div className="max-w-7xl mx-auto flex items-center justify-between">
             <div className="flex items-center space-x-3">
@@ -108,7 +124,6 @@ export default function Dashboard() {
             </div>
           ) : (
             <>
-              {/* KPI Row */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
                 <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
                   <p className="text-gray-400 text-sm">Total Mentions</p>
@@ -132,7 +147,6 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* Timeline Chart */}
               <div className="bg-gray-900 rounded-xl p-5 border border-gray-800 mb-6">
                 <h2 className="text-lg font-semibold mb-4">Evolution des mentions</h2>
                 <ResponsiveContainer width="100%" height={250}>
@@ -150,9 +164,7 @@ export default function Dashboard() {
                 </ResponsiveContainer>
               </div>
 
-              {/* Row: Platforms + Narratifs */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-                {/* Platforms */}
                 <div className="bg-gray-900 rounded-xl p-5 border border-gray-800">
                   <h2 className="text-lg font-semibold mb-4">Volume par plateforme</h2>
                   {platforms.length === 0 ? (
@@ -160,7 +172,8 @@ export default function Dashboard() {
                   ) : (
                     <ResponsiveContainer width="100%" height={200}>
                       <PieChart>
-                        <Pie data={platforms} dataKey="count" nameKey="platform" cx="50%" cy="50%" outerRadius={80} label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}>
+                        <Pie data={platforms} dataKey="count" nameKey="platform" cx="50%" cy="50%" outerRadius={80}
+                          label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}>
                           {platforms.map((_, i) => <Cell key={i} fill={PLATFORM_COLORS[i % PLATFORM_COLORS.length]} />)}
                         </Pie>
                         <Tooltip contentStyle={{ backgroundColor: '#1f2937', border: 'none' }} />
@@ -169,7 +182,6 @@ export default function Dashboard() {
                   )}
                 </div>
 
-                {/* Top Narratifs */}
                 <div className="bg-gray-900 rounded-xl p-5 border border-gray-800">
                   <h2 className="text-lg font-semibold mb-4">Top Narratifs</h2>
                   {narratifs.length === 0 ? (
@@ -194,7 +206,6 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* Top Accounts */}
               <div className="bg-gray-900 rounded-xl p-5 border border-gray-800">
                 <h2 className="text-lg font-semibold mb-4">Comptes moteurs</h2>
                 {topAccounts.length === 0 ? (
