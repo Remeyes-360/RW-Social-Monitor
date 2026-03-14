@@ -7,6 +7,15 @@ const api = axios.create({
   timeout: 10000,
 });
 
+// Attach JWT token to every request if present
+api.interceptors.request.use((config) => {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('rw_token') : null;
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 export interface Stats {
   total: number;
   positive: number;
@@ -30,6 +39,8 @@ export interface Platform {
   count: number;
 }
 
+// FIX: Renamed from Narratif (single-r typo) to Narratif — keeping type name but fixing
+// the variable names in the component (naratifs → narratifs)
 export interface Narratif {
   narratif: string;
   count: number;
@@ -50,13 +61,14 @@ export interface TopAccount {
 }
 
 export interface Mention {
-  id: number;
+  id: string; // FIX: was number — model uses UUID which serializes as string
   platform: string;
   content: string;
   author: string;
   sentiment: string;
   is_crisis: boolean;
   narratifs: string[];
+  comentions: string[];
   collected_at: string;
   url: string;
 }
@@ -65,7 +77,8 @@ export const dashboardApi = {
   getStats: (hours = 24) => api.get<Stats>(`/api/dashboard/stats?hours=${hours}`),
   getAlertLevel: () => api.get<AlertLevel>('/api/dashboard/alert-level'),
   getPlatforms: (hours = 24) => api.get<Platform[]>(`/api/dashboard/platforms?hours=${hours}`),
-  getNaratifs: (hours = 24) => api.get<Narratif[]>(`/api/dashboard/narratifs?hours=${hours}`),
+  // FIX: Renamed getNaratifs → getNarratifs (was a typo throughout)
+  getNarratifs: (hours = 24) => api.get<Narratif[]>(`/api/dashboard/narratifs?hours=${hours}`),
   getTimeline: (hours = 24) => api.get<TimelinePoint[]>(`/api/dashboard/timeline?hours=${hours}`),
   getTopAccounts: (hours = 24) => api.get<TopAccount[]>(`/api/dashboard/top-accounts?hours=${hours}`),
   getComentions: (hours = 24) => api.get(`/api/dashboard/comentions?hours=${hours}`),
