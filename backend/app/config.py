@@ -55,8 +55,12 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = Field(default="", env="SMTP_PASSWORD")
     ALERT_RECIPIENTS: str = Field(default="", env="ALERT_RECIPIENTS")
 
-    # Seuils d'alerte
-    ALERT_NEGATIVE_THRESHOLD: int = Field(default=60, env="ALERT_NEGATIVE_THRESHOLD")
+    # FIX: Centralized alert thresholds (previously split across 3 files with conflicting values)
+    ALERT_THRESHOLD_CALM: int = Field(default=20, env="ALERT_THRESHOLD_CALM")
+    ALERT_THRESHOLD_VIGILANCE: int = Field(default=40, env="ALERT_THRESHOLD_VIGILANCE")
+    ALERT_THRESHOLD_TENSION: int = Field(default=60, env="ALERT_THRESHOLD_TENSION")
+    ALERT_THRESHOLD_CRISIS: int = Field(default=80, env="ALERT_THRESHOLD_CRISIS")
+
     ALERT_VOLUME_SPIKE_MULTIPLIER: int = Field(default=3, env="ALERT_VOLUME_SPIKE_MULTIPLIER")
     ALERT_CRISIS_KEYWORDS: str = Field(
         default="CRIET,arrestation,scandale,corruption,prison",
@@ -71,6 +75,9 @@ class Settings(BaseSettings):
     MONITOR_LANGUAGES: str = Field(default="fr,fon,yoruba", env="MONITOR_LANGUAGES")
     COLLECT_INTERVAL_MINUTES: int = Field(default=15, env="COLLECT_INTERVAL_MINUTES")
 
+    # FIX: Max concurrent AI analysis calls (prevents N*GPT-4 sequential blowout)
+    AI_ANALYSIS_CONCURRENCY: int = Field(default=10, env="AI_ANALYSIS_CONCURRENCY")
+
     @property
     def keywords_list(self) -> List[str]:
         return [k.strip() for k in self.MONITOR_KEYWORDS.split(",")]
@@ -82,6 +89,10 @@ class Settings(BaseSettings):
     @property
     def alert_recipients_list(self) -> List[str]:
         return [r.strip() for r in self.ALERT_RECIPIENTS.split(",") if r.strip()]
+
+    @property
+    def monitor_languages_list(self) -> List[str]:
+        return [lang.strip() for lang in self.MONITOR_LANGUAGES.split(",")]
 
     class Config:
         env_file = ".env"
