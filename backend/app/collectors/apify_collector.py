@@ -1,3 +1,4 @@
+import asyncio
 from apify_client import ApifyClient
 from app.config import settings
 from app.models.mention import Platform
@@ -11,33 +12,36 @@ class ApifyCollector:
     Couvre: TikTok, Instagram, Facebook, WhatsApp Channels.
     """
 
-    # IDs des acteurs Apify
     ACTORS = {
         "tiktok": "clockworks/tiktok-scraper",
         "instagram": "apify/instagram-scraper",
         "facebook": "apify/facebook-pages-scraper",
-        "whatsapp": "apify/web-scraper",  # Scraper generique pour WhatsApp Channels
+        "whatsapp": "apify/web-scraper",
     }
 
     def __init__(self):
         self.client = ApifyClient(settings.APIFY_TOKEN)
         self.keywords = settings.keywords_list
 
+    def _run_actor(self, actor_id: str, run_input: dict) -> list:
+        """Synchronous Apify call — wrapped in to_thread() to avoid blocking event loop."""
+        run = self.client.actor(actor_id).call(run_input=run_input)
+        return list(self.client.dataset(run["defaultDatasetId"]).iterate_items())
+
     async def collect_tiktok(self, max_results: int = 50) -> List[Dict]:
         """Collecter les videos TikTok mentionnant Wadagni."""
         mentions = []
         try:
-            search_terms = self.keywords
             run_input = {
-                "searchQueries": search_terms,
+                "searchQueries": self.keywords,
                 "maxResults": max_results,
                 "shouldDownloadVideos": False,
                 "shouldDownloadCovers": False,
             }
+            # FIX: Apify SDK is synchronous — run in thread to avoid blocking the async event loop
+            items = await asyncio.to_thread(self._run_actor, self.ACTORS["tiktok"], run_input)
 
-            run = self.client.actor(self.ACTORS["tiktok"]).call(run_input=run_input)
-            
-            for item in self.client.dataset(run["defaultDatasetId"]).iterate_items():
+            for item in items:
                 content = item.get("text", "") or item.get("title", "")
                 if not content:
                     continue
@@ -74,15 +78,13 @@ class ApifyCollector:
                 "resultsLimit": max_results,
                 "resultsType": "posts",
             }
+            # FIX: Run synchronous Apify call in thread
+            items = await asyncio.to_thread(self._run_actor, self.ACTORS["instagram"], run_input)
 
-            run = self.client.actor(self.ACTORS["instagram"]).call(run_input=run_input)
-
-            for item in self.client.dataset(run["defaultDatasetId"]).iterate_items():
+            for item in items:
                 caption = item.get("caption", "")
                 if not caption:
                     continue
-
-                # Verifier la presence de mots cles
                 if not any(k.lower() in caption.lower() for k in self.keywords):
                     continue
 
@@ -109,14 +111,18 @@ class ApifyCollector:
         return mentions
 
     async def collect_all(self) -> List[Dict]:
-        """Collecter sur toutes les plateformes Apify."""
+        """FIX: Collect from all platforms concurrently instead of sequentially."""
+        tiktok, instagram = await asyncio.gather(
+            self.collect_tiktok(),
+            self.collect_instagram(),
+            return_exceptions=True,
+        )
         all_mentions = []
-        
-        tiktok = await self.collect_tiktok()
-        all_mentions.extend(tiktok)
-
-        instagram = await self.collect_instagram()
-        all_mentions.extend(instagram)
+        for result in (tiktok, instagram):
+            if isinstance(result, Exception):
+                logger.error(f"Erreur collecte Apify: {result}")
+            else:
+                all_mentions.extend(result)
 
         logger.info(f"Apify total: {len(all_mentions)} mentions collectees")
         return all_mentions
