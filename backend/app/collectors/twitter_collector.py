@@ -5,6 +5,10 @@ from loguru import logger
 from datetime import datetime, timezone
 from typing import List, Dict
 
+# Twitter language codes supported by the API
+# Fon does not have an ISO 639-1 code recognised by Twitter; Yoruba = 'yo'
+_TWITTER_LANG_MAP = {"fr": "fr", "yoruba": "yo", "fon": None}
+
 
 class TwitterCollector:
     """Collecteur de mentions X/Twitter pour Romuald Wadagni."""
@@ -21,26 +25,42 @@ class TwitterCollector:
         self.keywords = settings.keywords_list
 
     def build_query(self) -> str:
-        """Construire la requete de recherche Twitter."""
+        """
+        FIX: Build language filter from MONITOR_LANGUAGES setting.
+        Previously hardcoded to lang:fr, silently dropping Fon and Yoruba content.
+        Fon has no Twitter language code so no lang filter is applied when it is
+        the only non-mappable language (falls back to no language restriction).
+        """
         keyword_parts = [f'"{k}"' for k in self.keywords]
         query = " OR ".join(keyword_parts)
-        # Exclure les retweets et les spams
-        query += " -is:retweet lang:fr"
+        query += " -is:retweet"
+
+        supported_lang_codes = [
+            _TWITTER_LANG_MAP[lang]
+            for lang in settings.monitor_languages_list
+            if lang in _TWITTER_LANG_MAP and _TWITTER_LANG_MAP[lang] is not None
+        ]
+
+        if supported_lang_codes:
+            if len(supported_lang_codes) == 1:
+                query += f" lang:{supported_lang_codes[0]}"
+            else:
+                lang_filter = " OR ".join(f"lang:{c}" for c in supported_lang_codes)
+                query += f" ({lang_filter})"
+        # If no mappable language codes, omit lang filter entirely to catch all languages
+
         return query
 
     async def collect(self, max_results: int = 100) -> List[Dict]:
         """Collecter les tweets mentionnant Wadagni."""
         mentions = []
         query = self.build_query()
-        
+
         try:
             tweets = self.client.search_recent_tweets(
                 query=query,
                 max_results=max_results,
-                tweet_fields=[
-                    "created_at", "author_id", "public_metrics",
-                    "lang", "referenced_tweets", "entities",
-                ],
+                tweet_fields=["created_at", "author_id", "public_metrics", "lang", "referenced_tweets", "entities"],
                 user_fields=["name", "username", "public_metrics", "url"],
                 expansions=["author_id"],
             )
@@ -49,7 +69,6 @@ class TwitterCollector:
                 logger.info("Aucun tweet trouve")
                 return []
 
-            # Mapper les auteurs
             users = {u.id: u for u in (tweets.includes.get("users") or [])}
 
             for tweet in tweets.data:
@@ -73,7 +92,7 @@ class TwitterCollector:
                     "raw_data": {"tweet_id": str(tweet.id), "metrics": metrics},
                 }
                 mentions.append(mention)
-                
+
             logger.info(f"Twitter: {len(mentions)} tweets collectes")
             return mentions
 
